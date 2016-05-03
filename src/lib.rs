@@ -1,5 +1,4 @@
 #![feature(allocator)]
-#![feature(no_std)]
 #![no_std]
 #![allocator]
 #![allow(improper_ctypes)]
