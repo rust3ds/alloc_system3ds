@@ -12,11 +12,9 @@
 #![crate_type = "rlib"]
 #![no_std]
 #![deny(warnings)]
-#![feature(global_allocator)]
 #![feature(allocator_api)]
 #![feature(alloc)]
 #![feature(core_intrinsics)]
-#![feature(staged_api)]
 
 // The minimum alignment guaranteed by the architecture. This value is used to
 // add fast paths for low alignment values. In practice, the alignment is a
@@ -36,81 +34,75 @@ const MIN_ALIGN: usize = 8;
               target_arch = "sparc64")))]
 const MIN_ALIGN: usize = 16;
 
-#[unstable(feature = "allocator_api", issue = "32838")]
-pub use new::System;
 
-mod new {
-    pub extern crate alloc;
+extern crate alloc;
 
-    use self::alloc::heap::{Alloc, AllocErr, Layout, Excess, CannotReallocInPlace};
+use alloc::heap::{Alloc, AllocErr, Layout, Excess, CannotReallocInPlace};
 
-    #[unstable(feature = "allocator_api", issue = "32838")]
-    pub struct System;
+pub struct System;
 
-    #[unstable(feature = "allocator_api", issue = "32838")]
-    unsafe impl Alloc for System {
-        #[inline]
-        unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
-            (&*self).alloc(layout)
-        }
+unsafe impl Alloc for System {
+    #[inline]
+    unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
+        (&*self).alloc(layout)
+    }
 
-        #[inline]
-        unsafe fn alloc_zeroed(&mut self, layout: Layout)
-            -> Result<*mut u8, AllocErr>
-        {
-            (&*self).alloc_zeroed(layout)
-        }
+    #[inline]
+    unsafe fn alloc_zeroed(&mut self, layout: Layout)
+        -> Result<*mut u8, AllocErr>
+    {
+        (&*self).alloc_zeroed(layout)
+    }
 
-        #[inline]
-        unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
-            (&*self).dealloc(ptr, layout)
-        }
+    #[inline]
+    unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
+        (&*self).dealloc(ptr, layout)
+    }
 
-        #[inline]
-        unsafe fn realloc(&mut self,
-                          ptr: *mut u8,
-                          old_layout: Layout,
-                          new_layout: Layout) -> Result<*mut u8, AllocErr> {
-            (&*self).realloc(ptr, old_layout, new_layout)
-        }
+    #[inline]
+    unsafe fn realloc(&mut self,
+                      ptr: *mut u8,
+                      old_layout: Layout,
+                      new_layout: Layout) -> Result<*mut u8, AllocErr> {
+        (&*self).realloc(ptr, old_layout, new_layout)
+    }
 
-        fn oom(&mut self, err: AllocErr) -> ! {
-            (&*self).oom(err)
-        }
+    fn oom(&mut self, err: AllocErr) -> ! {
+        (&*self).oom(err)
+    }
 
-        #[inline]
-        fn usable_size(&self, layout: &Layout) -> (usize, usize) {
-            (&self).usable_size(layout)
-        }
+    #[inline]
+    fn usable_size(&self, layout: &Layout) -> (usize, usize) {
+        (&self).usable_size(layout)
+    }
 
-        #[inline]
-        unsafe fn alloc_excess(&mut self, layout: Layout) -> Result<Excess, AllocErr> {
-            (&*self).alloc_excess(layout)
-        }
+    #[inline]
+    unsafe fn alloc_excess(&mut self, layout: Layout) -> Result<Excess, AllocErr> {
+        (&*self).alloc_excess(layout)
+    }
 
-        #[inline]
-        unsafe fn realloc_excess(&mut self,
-                                 ptr: *mut u8,
-                                 layout: Layout,
-                                 new_layout: Layout) -> Result<Excess, AllocErr> {
-            (&*self).realloc_excess(ptr, layout, new_layout)
-        }
+    #[inline]
+    unsafe fn realloc_excess(&mut self,
+                             ptr: *mut u8,
+                             layout: Layout,
+                             new_layout: Layout) -> Result<Excess, AllocErr> {
+        (&*self).realloc_excess(ptr, layout, new_layout)
+    }
 
-        #[inline]
-        unsafe fn grow_in_place(&mut self,
-                                ptr: *mut u8,
-                                layout: Layout,
-                                new_layout: Layout) -> Result<(), CannotReallocInPlace> {
-            (&*self).grow_in_place(ptr, layout, new_layout)
-        }
+    #[inline]
+    unsafe fn grow_in_place(&mut self,
+                            ptr: *mut u8,
+                            layout: Layout,
+                            new_layout: Layout) -> Result<(), CannotReallocInPlace> {
+        (&*self).grow_in_place(ptr, layout, new_layout)
+    }
 
-        #[inline]
-        unsafe fn shrink_in_place(&mut self,
-                                  ptr: *mut u8,
-                                  layout: Layout,
-                                  new_layout: Layout) -> Result<(), CannotReallocInPlace> {
-            (&*self).shrink_in_place(ptr, layout, new_layout)
-        }
+    #[inline]
+    unsafe fn shrink_in_place(&mut self,
+                              ptr: *mut u8,
+                              layout: Layout,
+                              new_layout: Layout) -> Result<(), CannotReallocInPlace> {
+        (&*self).shrink_in_place(ptr, layout, new_layout)
     }
 }
 
@@ -121,10 +113,9 @@ mod platform {
     use core::ptr;
 
     use MIN_ALIGN;
-    use new::System;
-    use new::alloc::heap::{Alloc, AllocErr, Layout};
+    use ::System;
+    use ::alloc::heap::{Alloc, AllocErr, Layout};
 
-    #[unstable(feature = "allocator_api", issue = "32838")]
     unsafe impl<'a> Alloc for &'a System {
         #[inline]
         unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
@@ -243,6 +234,9 @@ mod platform {
         // [4]: https://chromium.googlesource.com/chromium/src/base/+/master/
 		//                                       /memory/aligned_memory.cc
         #[no_mangle]
+        // `libc` doesn't provide a signature for memalign for newlib.
+        // this will be fixed in the next version, but for now we
+        // just define it ourselves here
         extern "C" {
             fn memalign(align: libc::size_t, size: libc::size_t) -> *mut libc::c_void;
         }
