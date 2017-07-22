@@ -233,15 +233,7 @@ mod platform {
         // [3]: https://bugs.chromium.org/p/chromium/issues/detail?id=138579
         // [4]: https://chromium.googlesource.com/chromium/src/base/+/master/
 		//                                       /memory/aligned_memory.cc
-        #[no_mangle]
-        // `libc` doesn't provide a signature for memalign for newlib.
-        // this will be fixed in the next version, but for now we
-        // just define it ourselves here
-        extern "C" {
-            fn memalign(align: libc::size_t, size: libc::size_t) -> *mut libc::c_void;
-        }
-
-        memalign(layout.align(), layout.size()) as *mut u8
+        libc::memalign(layout.align(), layout.size()) as *mut u8
     }
 
     #[cfg(not(any(target_os = "android", target_os = "redox", target_env = "newlib")))]
