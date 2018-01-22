@@ -15,6 +15,7 @@
 #![feature(allocator_api)]
 #![feature(alloc)]
 #![feature(core_intrinsics)]
+#![feature(libc)]
 
 // The minimum alignment guaranteed by the architecture. This value is used to
 // add fast paths for low alignment values. In practice, the alignment is a
