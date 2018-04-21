@@ -13,7 +13,6 @@
 #![no_std]
 #![deny(warnings)]
 #![feature(allocator_api)]
-#![feature(alloc)]
 #![feature(core_intrinsics)]
 #![feature(libc)]
 
@@ -35,188 +34,119 @@ const MIN_ALIGN: usize = 8;
               target_arch = "sparc64")))]
 const MIN_ALIGN: usize = 16;
 
-
-extern crate alloc;
-
-use alloc::heap::{Alloc, AllocErr, Layout, Excess, CannotReallocInPlace};
+use core::alloc::{Alloc, GlobalAlloc, AllocErr, Layout, Opaque}; 
+use core::ptr::NonNull;
 
 pub struct System;
 
 unsafe impl Alloc for System {
     #[inline]
-    unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
-        (&*self).alloc(layout)
+    unsafe fn alloc(&mut self, layout: Layout) -> Result<NonNull<Opaque>, AllocErr> {
+        NonNull::new(GlobalAlloc::alloc(self, layout)).ok_or(AllocErr)
     }
 
     #[inline]
-    unsafe fn alloc_zeroed(&mut self, layout: Layout)
-        -> Result<*mut u8, AllocErr>
-    {
-        (&*self).alloc_zeroed(layout)
+    unsafe fn alloc_zeroed(&mut self, layout: Layout) -> Result<NonNull<Opaque>, AllocErr> {
+        NonNull::new(GlobalAlloc::alloc_zeroed(self, layout)).ok_or(AllocErr)
     }
 
     #[inline]
-    unsafe fn dealloc(&mut self, ptr: *mut u8, layout: Layout) {
-        (&*self).dealloc(ptr, layout)
+    unsafe fn dealloc(&mut self, ptr: NonNull<Opaque>, layout: Layout) {
+        GlobalAlloc::dealloc(self, ptr.as_ptr(), layout)
     }
 
     #[inline]
     unsafe fn realloc(&mut self,
-                      ptr: *mut u8,
-                      old_layout: Layout,
-                      new_layout: Layout) -> Result<*mut u8, AllocErr> {
-        (&*self).realloc(ptr, old_layout, new_layout)
-    }
-
-    fn oom(&mut self, err: AllocErr) -> ! {
-        (&*self).oom(err)
+                      ptr: NonNull<Opaque>,
+                      layout: Layout,
+                      new_size: usize) -> Result<NonNull<Opaque>, AllocErr> {
+        NonNull::new(GlobalAlloc::realloc(self, ptr.as_ptr(), layout, new_size)).ok_or(AllocErr)
     }
 
     #[inline]
-    fn usable_size(&self, layout: &Layout) -> (usize, usize) {
-        (&self).usable_size(layout)
+    fn oom(&mut self) -> ! {
+        ::oom()
     }
+}
 
-    #[inline]
-    unsafe fn alloc_excess(&mut self, layout: Layout) -> Result<Excess, AllocErr> {
-        (&*self).alloc_excess(layout)
-    }
+mod realloc_fallback {
+    use core::alloc::{GlobalAlloc, Opaque, Layout};
+    use core::cmp;
+    use core::ptr;
 
-    #[inline]
-    unsafe fn realloc_excess(&mut self,
-                             ptr: *mut u8,
-                             layout: Layout,
-                             new_layout: Layout) -> Result<Excess, AllocErr> {
-        (&*self).realloc_excess(ptr, layout, new_layout)
-    }
+    impl super::System {
+        pub(crate) unsafe fn realloc_fallback(&self, ptr: *mut Opaque, old_layout: Layout,
+                                              new_size: usize) -> *mut Opaque {
+            // Docs for GlobalAlloc::realloc require this to be valid:
+            let new_layout = Layout::from_size_align_unchecked(new_size, old_layout.align());
 
-    #[inline]
-    unsafe fn grow_in_place(&mut self,
-                            ptr: *mut u8,
-                            layout: Layout,
-                            new_layout: Layout) -> Result<(), CannotReallocInPlace> {
-        (&*self).grow_in_place(ptr, layout, new_layout)
-    }
-
-    #[inline]
-    unsafe fn shrink_in_place(&mut self,
-                              ptr: *mut u8,
-                              layout: Layout,
-                              new_layout: Layout) -> Result<(), CannotReallocInPlace> {
-        (&*self).shrink_in_place(ptr, layout, new_layout)
+            let new_ptr = GlobalAlloc::alloc(self, new_layout);
+            if !new_ptr.is_null() {
+                let size = cmp::min(old_layout.size(), new_size);
+                ptr::copy_nonoverlapping(ptr as *mut u8, new_ptr as *mut u8, size);
+                GlobalAlloc::dealloc(self, ptr, old_layout);
+            }
+            new_ptr
+        }
     }
 }
 
 mod platform {
     extern crate libc;
 
-    use core::cmp;
     use core::ptr;
 
     use MIN_ALIGN;
-    use ::System;
-    use ::alloc::heap::{Alloc, AllocErr, Layout};
+    use System;
+    use core::alloc::{GlobalAlloc, Layout, Opaque};
 
-    unsafe impl<'a> Alloc for &'a System {
+    unsafe impl GlobalAlloc for System {
         #[inline]
-        unsafe fn alloc(&mut self, layout: Layout) -> Result<*mut u8, AllocErr> {
-            let ptr = if layout.align() <= MIN_ALIGN {
-                libc::malloc(layout.size()) as *mut u8
+        unsafe fn alloc(&self, layout: Layout) -> *mut Opaque {
+            if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
+                libc::malloc(layout.size()) as *mut Opaque
             } else {
+                #[cfg(target_os = "macos")]
+                {
+                    if layout.align() > (1 << 31) {
+                        // FIXME: use Opaque::null_mut
+                        // https://github.com/rust-lang/rust/issues/49659
+                        return 0 as *mut Opaque
+                    }
+                }
                 aligned_malloc(&layout)
-            };
-            if !ptr.is_null() {
-                Ok(ptr)
-            } else {
-                Err(AllocErr::Exhausted { request: layout })
             }
         }
 
         #[inline]
-        unsafe fn alloc_zeroed(&mut self, layout: Layout)
-            -> Result<*mut u8, AllocErr>
-        {
-            if layout.align() <= MIN_ALIGN {
-                let ptr = libc::calloc(layout.size(), 1) as *mut u8;
+        unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut Opaque {
+            if layout.align() <= MIN_ALIGN && layout.align() <= layout.size() {
+                libc::calloc(layout.size(), 1) as *mut Opaque
+            } else {
+                let ptr = self.alloc(layout.clone());
                 if !ptr.is_null() {
-                    Ok(ptr)
-                } else {
-                    Err(AllocErr::Exhausted { request: layout })
+                    ptr::write_bytes(ptr as *mut u8, 0, layout.size());
                 }
-            } else {
-                let ret = self.alloc(layout.clone());
-                if let Ok(ptr) = ret {
-                    ptr::write_bytes(ptr, 0, layout.size());
-                }
-                ret
+                ptr
             }
         }
 
         #[inline]
-        unsafe fn dealloc(&mut self, ptr: *mut u8, _layout: Layout) {
+        unsafe fn dealloc(&self, ptr: *mut Opaque, _layout: Layout) {
             libc::free(ptr as *mut libc::c_void)
         }
 
         #[inline]
-        unsafe fn realloc(&mut self,
-                          ptr: *mut u8,
-                          old_layout: Layout,
-                          new_layout: Layout) -> Result<*mut u8, AllocErr> {
-            if old_layout.align() != new_layout.align() {
-                return Err(AllocErr::Unsupported {
-                    details: "cannot change alignment on `realloc`",
-                })
-            }
-
-            if new_layout.align() <= MIN_ALIGN {
-                let ptr = libc::realloc(ptr as *mut libc::c_void, new_layout.size());
-                if !ptr.is_null() {
-                    Ok(ptr as *mut u8)
-                } else {
-                    Err(AllocErr::Exhausted { request: new_layout })
-                }
+        unsafe fn realloc(&self, ptr: *mut Opaque, layout: Layout, new_size: usize) -> *mut Opaque {
+            if layout.align() <= MIN_ALIGN && layout.align() <= new_size {
+                libc::realloc(ptr as *mut libc::c_void, new_size) as *mut Opaque
             } else {
-                let res = self.alloc(new_layout.clone());
-                if let Ok(new_ptr) = res {
-                    let size = cmp::min(old_layout.size(), new_layout.size());
-                    ptr::copy_nonoverlapping(ptr, new_ptr, size);
-                    self.dealloc(ptr, old_layout);
-                }
-                res
-            }
-        }
-
-        fn oom(&mut self, err: AllocErr) -> ! {
-            use core::fmt::{self, Write};
-
-            // Print a message to stderr before aborting to assist with
-            // debugging. It is critical that this code does not allocate any
-            // memory since we are in an OOM situation. Any errors are ignored
-            // while printing since there's nothing we can do about them and we
-            // are about to exit anyways.
-            drop(writeln!(Stderr, "fatal runtime error: {}", err));
-            unsafe {
-                ::core::intrinsics::abort();
-            }
-
-            struct Stderr;
-
-            impl Write for Stderr {
-                fn write_str(&mut self, s: &str) -> fmt::Result {
-                    unsafe {
-                        libc::write(libc::STDERR_FILENO,
-                                    s.as_ptr() as *const libc::c_void,
-                                    s.len());
-                    }
-                    Ok(())
-                }
+                self.realloc_fallback(ptr, layout, new_size)
             }
         }
     }
 
-    #[cfg(any(target_os = "android", target_os = "redox", target_env = "newlib"))]
-    #[inline]
-    unsafe fn aligned_malloc(layout: &Layout) -> *mut u8 {
+    unsafe fn aligned_malloc(layout: &Layout) -> *mut Opaque {
         // On android we currently target API level 9 which unfortunately
         // doesn't have the `posix_memalign` API used below. Instead we use
         // `memalign`, but this unfortunately has the property on some systems
@@ -233,19 +163,26 @@ mod platform {
         // [2]: https://code.google.com/p/android/issues/detail?id=35391
         // [3]: https://bugs.chromium.org/p/chromium/issues/detail?id=138579
         // [4]: https://chromium.googlesource.com/chromium/src/base/+/master/
-		//                                       /memory/aligned_memory.cc
-        libc::memalign(layout.align(), layout.size()) as *mut u8
+        //                                       /memory/aligned_memory.cc
+        libc::memalign(layout.align(), layout.size()) as *mut Opaque
     }
+}
 
-    #[cfg(not(any(target_os = "android", target_os = "redox", target_env = "newlib")))]
-    #[inline]
-    unsafe fn aligned_malloc(layout: &Layout) -> *mut u8 {
-        let mut out = ptr::null_mut();
-        let ret = libc::posix_memalign(&mut out, layout.align(), layout.size());
-        if ret != 0 {
-            ptr::null_mut()
-        } else {
-            out as *mut u8
-        }
+#[inline]
+fn oom() -> ! {
+    write_to_stderr("fatal runtime error: memory allocation failed");
+    unsafe {
+        ::core::intrinsics::abort();
+    }
+}
+
+#[inline]
+fn write_to_stderr(s: &str) {
+    extern crate libc;
+
+    unsafe {
+        libc::write(libc::STDERR_FILENO,
+                    s.as_ptr() as *const libc::c_void,
+                    s.len());
     }
 }
