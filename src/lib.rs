@@ -62,11 +62,6 @@ unsafe impl Alloc for System {
                       new_size: usize) -> Result<NonNull<Opaque>, AllocErr> {
         NonNull::new(GlobalAlloc::realloc(self, ptr.as_ptr(), layout, new_size)).ok_or(AllocErr)
     }
-
-    #[inline]
-    fn oom(&mut self) -> ! {
-        ::oom()
-    }
 }
 
 mod realloc_fallback {
@@ -165,24 +160,5 @@ mod platform {
         // [4]: https://chromium.googlesource.com/chromium/src/base/+/master/
         //                                       /memory/aligned_memory.cc
         libc::memalign(layout.align(), layout.size()) as *mut Opaque
-    }
-}
-
-#[inline]
-fn oom() -> ! {
-    write_to_stderr("fatal runtime error: memory allocation failed");
-    unsafe {
-        ::core::intrinsics::abort();
-    }
-}
-
-#[inline]
-fn write_to_stderr(s: &str) {
-    extern crate libc;
-
-    unsafe {
-        libc::write(libc::STDERR_FILENO,
-                    s.as_ptr() as *const libc::c_void,
-                    s.len());
     }
 }
